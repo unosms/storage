@@ -230,7 +230,7 @@
                         </thead>
                         <tbody class="divide-y divide-slate-100">
                             @forelse ($logs as $log)
-                                <tr>
+                                <tr data-transfer-status="{{ $log->status }}">
                                     <td class="px-4 py-3 text-slate-600">{{ optional($log->started_at)->format('Y-m-d H:i:s') ?? '-' }}</td>
                                     <td class="px-4 py-3 text-slate-800 font-medium">{{ $log->user?->name ?? '-' }}</td>
                                     <td class="px-4 py-3 text-slate-700">
@@ -255,7 +255,15 @@
                                         @endif
                                     </td>
                                     <td class="px-4 py-3 text-right font-medium text-slate-800">{{ number_format($log->size_bytes / 1024 / 1024, 2) }} MB</td>
-                                    <td class="px-4 py-3 text-right text-slate-600">{{ $log->speed_kbps !== null ? number_format($log->speed_kbps, 2) . ' kbps' : '-' }}</td>
+                                    <td class="px-4 py-3 text-right text-slate-600">
+                                        @if ($log->speed_kbps !== null)
+                                            {{ number_format($log->speed_kbps, 2) }} kbps
+                                        @elseif ($log->status === 'in_progress')
+                                            checking...
+                                        @else
+                                            -
+                                        @endif
+                                    </td>
                                 </tr>
                             @empty
                                 <tr>
@@ -287,6 +295,13 @@
 
             if (!form) {
                 return;
+            }
+
+            const hasPendingTransfers = document.querySelector('tr[data-transfer-status="in_progress"]') !== null;
+            if (hasPendingTransfers) {
+                setTimeout(function () {
+                    window.location.reload();
+                }, 15000);
             }
 
             const showMessage = (type, text) => {

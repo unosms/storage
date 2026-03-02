@@ -16,6 +16,7 @@ class TransferController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+        $this->reconcileInProgressTransfers($user);
 
         $query = TransferLog::with('user')->latest('started_at')->latest('id');
 
@@ -600,6 +601,70 @@ class TransferController extends Controller
         }
 
         return back()->withErrors(['upload' => $message]);
+    }
+
+    private function reconcileInProgressTransfers(User $viewer): void
+    {
+        $query = TransferLog::with('user')
+            ->where('status', 'in_progress')
+            ->latest('started_at')
+            ->limit(25);
+
+        if (! $viewer->isAdmin()) {
+            $query->where('user_id', $viewer->id);
+        }
+
+        $logs = $query->get();
+
+        foreach ($logs as $log) {
+            $ftpUser = $log->user;
+            if (! $ftpUser) {
+                continue;
+            }
+
+            $connection = null;
+
+            try {
+                $connection = $this->openFtpConnection($ftpUser);
+                $relativePath = $this->normalizeStoredLogPath($ftpUser, (string) $log->ftp_path);
+                if ($relativePath === '') {
+                    continue;
+                }
+
+                $absolutePath = $this->absoluteFtpPath($ftpUser, $relativePath);
+                $remoteSize = (int) @ftp_size($connection, $absolutePath);
+
+                if ($remoteSize < 0 || $remoteSize < (int) $log->size_bytes) {
+                    continue;
+                }
+
+                $startedAt = $log->started_at ?? now();
+                $seconds = max(1, now()->diffInSeconds($startedAt));
+                $speedKbps = round((((int) $log->size_bytes) * 8 / 1024) / $seconds, 2);
+
+                DB::transaction(function () use ($log, $ftpUser, $speedKbps) {
+                    $freshLog = TransferLog::lockForUpdate()->find($log->id);
+                    if (! $freshLog || $freshLog->status !== 'in_progress') {
+                        return;
+                    }
+
+                    $freshLog->update([
+                        'status' => 'completed',
+                        'speed_kbps' => $speedKbps,
+                        'finished_at' => now(),
+                        'message' => 'Recovered from pending state after upload check.',
+                    ]);
+
+                    $ftpUser->increment('used_space_bytes', (int) $freshLog->size_bytes);
+                });
+            } catch (Throwable $exception) {
+                // Keep entry in-progress if connection fails; next refresh will re-check.
+            } finally {
+                if ($connection) {
+                    @ftp_close($connection);
+                }
+            }
+        }
     }
 
     private function ftpLoginFailedMessage(User $user): string
