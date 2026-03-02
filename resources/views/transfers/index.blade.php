@@ -194,14 +194,18 @@
                 </div>
 
                 <div class="flex flex-wrap items-center gap-3 mb-4">
+                    @if ($parentDir !== null)
+                        <a href="{{ route('transfers.index', ['dir' => $parentDir]) }}" class="inline-flex items-center rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-700 hover:bg-slate-50">
+                            &uarr; Up
+                        </a>
+                    @else
+                        <span class="inline-flex items-center rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-400 cursor-not-allowed">
+                            &uarr; Up
+                        </span>
+                    @endif
                     <a href="{{ route('transfers.index') }}" class="inline-flex items-center rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-700 hover:bg-slate-50">
                         Root
                     </a>
-                    @if ($parentDir !== null)
-                        <a href="{{ route('transfers.index', ['dir' => $parentDir]) }}" class="inline-flex items-center rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-700 hover:bg-slate-50">
-                            Parent
-                        </a>
-                    @endif
                     <a href="{{ route('transfers.index', ['dir' => $currentDir]) }}" class="inline-flex items-center rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-slate-700 hover:bg-slate-50">
                         Refresh
                     </a>
@@ -217,29 +221,48 @@
                             class="rounded-lg border-slate-300 text-sm"
                         />
                         <button type="submit" class="inline-flex items-center rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-white hover:bg-slate-700">
-                            Create Folder
+                            + Create
                         </button>
                     </form>
                 </div>
 
-                <div class="grid gap-4 lg:grid-cols-2">
-                    <div class="rounded-xl border border-slate-200 overflow-hidden">
-                        <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">Folders</div>
-                        <div class="max-h-72 overflow-auto">
-                            @if (count($directories) === 0)
-                                <p class="px-4 py-3 text-sm text-slate-500">No folders found.</p>
-                            @else
-                                <ul class="divide-y divide-slate-100">
-                                    @foreach ($directories as $directory)
-                                        <li class="px-4 py-3 flex items-center justify-between gap-2">
-                                            <a href="{{ route('transfers.index', ['dir' => $directory['relative_path']]) }}"
-                                               class="text-sm text-indigo-700 hover:text-indigo-900 font-medium truncate">
-                                                [DIR] {{ $directory['name'] }}
-                                            </a>
-                                            <div class="flex items-center gap-2">
-                                                <a href="{{ route('transfers.index', ['dir' => $directory['relative_path']]) }}"
-                                                   class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                                                    Open
+                <div class="rounded-xl border border-slate-200 overflow-hidden">
+                    <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">Explorer</div>
+                    <div class="max-h-96 overflow-auto">
+                        <table class="min-w-full text-sm">
+                            <thead class="bg-white border-b border-slate-200 text-slate-500 uppercase text-xs tracking-wide">
+                                <tr>
+                                    <th class="px-4 py-3 text-left">Name</th>
+                                    <th class="px-4 py-3 text-left">Type</th>
+                                    <th class="px-4 py-3 text-right">Size</th>
+                                    <th class="px-4 py-3 text-right">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                @if ($parentDir !== null)
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="px-4 py-3 font-medium text-slate-700">..</td>
+                                        <td class="px-4 py-3 text-slate-500">Parent folder</td>
+                                        <td class="px-4 py-3 text-right text-slate-400">-</td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex justify-end">
+                                                <a href="{{ route('transfers.index', ['dir' => $parentDir]) }}" class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                                    &uarr; Up
+                                                </a>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                @endif
+
+                                @foreach ($directories as $directory)
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="px-4 py-3 font-medium text-slate-800">[DIR] {{ $directory['name'] }}</td>
+                                        <td class="px-4 py-3 text-slate-500">Folder</td>
+                                        <td class="px-4 py-3 text-right text-slate-400">-</td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex justify-end gap-2">
+                                                <a href="{{ route('transfers.index', ['dir' => $directory['relative_path']]) }}" class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                                    &rarr; Open
                                                 </a>
                                                 <form method="POST" action="{{ route('transfers.delete') }}" onsubmit="return confirm('Delete folder {{ $directory['name'] }} and all contents?')">
                                                     @csrf
@@ -251,35 +274,26 @@
                                                     </button>
                                                 </form>
                                             </div>
-                                        </li>
-                                    @endforeach
-                                </ul>
-                            @endif
-                        </div>
-                    </div>
+                                        </td>
+                                    </tr>
+                                @endforeach
 
-                    <div class="rounded-xl border border-slate-200 overflow-hidden">
-                        <div class="px-4 py-3 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">Files</div>
-                        <div class="max-h-72 overflow-auto">
-                            @if (count($files) === 0)
-                                <p class="px-4 py-3 text-sm text-slate-500">No files found.</p>
-                            @else
-                                <ul class="divide-y divide-slate-100">
-                                    @foreach ($files as $remoteFile)
-                                        <li class="px-4 py-3 flex items-center justify-between gap-3 text-sm">
-                                            <div class="min-w-0 flex-1">
-                                                <a
-                                                    href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}"
-                                                    class="text-indigo-700 hover:text-indigo-900 font-medium truncate"
-                                                    title="Download {{ $remoteFile['name'] }}"
-                                                >
-                                                    {{ $remoteFile['name'] }}
-                                                </a>
-                                                <p class="text-xs text-slate-500">{{ $remoteFile['size_label'] ?? number_format($remoteFile['size_bytes'] / 1024 / 1024, 2) . ' MB' }}</p>
-                                            </div>
-                                            <div class="flex items-center gap-2">
-                                                <a href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}"
-                                                   class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                @foreach ($files as $remoteFile)
+                                    <tr class="hover:bg-slate-50">
+                                        <td class="px-4 py-3">
+                                            <a
+                                                href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}"
+                                                class="font-medium text-indigo-700 hover:text-indigo-900"
+                                                title="Download {{ $remoteFile['name'] }}"
+                                            >
+                                                [FILE] {{ $remoteFile['name'] }}
+                                            </a>
+                                        </td>
+                                        <td class="px-4 py-3 text-slate-500">File</td>
+                                        <td class="px-4 py-3 text-right font-medium text-slate-700">{{ $remoteFile['size_label'] ?? number_format($remoteFile['size_bytes'] / 1024 / 1024, 2) . ' MB' }}</td>
+                                        <td class="px-4 py-3">
+                                            <div class="flex justify-end gap-2">
+                                                <a href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}" class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
                                                     Download
                                                 </a>
                                                 <form method="POST" action="{{ route('transfers.delete') }}" onsubmit="return confirm('Delete file {{ $remoteFile['name'] }}?')">
@@ -292,11 +306,17 @@
                                                     </button>
                                                 </form>
                                             </div>
-                                        </li>
-                                    @endforeach
-                                </ul>
-                            @endif
-                        </div>
+                                        </td>
+                                    </tr>
+                                @endforeach
+
+                                @if ($parentDir === null && count($directories) === 0 && count($files) === 0)
+                                    <tr>
+                                        <td colspan="4" class="px-4 py-8 text-center text-slate-500">This folder is empty.</td>
+                                    </tr>
+                                @endif
+                            </tbody>
+                        </table>
                     </div>
                 </div>
             </div>
