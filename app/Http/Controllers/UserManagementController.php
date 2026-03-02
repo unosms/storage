@@ -31,7 +31,7 @@ class UserManagementController extends Controller
     {
         $data = $request->validate($this->rules());
 
-        $user = User::create($this->buildPayload($data, true));
+        $user = User::create($this->buildPayload($data, true, null));
 
         try {
             $ftpPayload = $this->ftpAccountProvisioningService->provisionForUser($user, (string) $data['password']);
@@ -57,10 +57,20 @@ class UserManagementController extends Controller
     public function update(Request $request, User $user)
     {
         $data = $request->validate($this->rules($user->id, false));
+        $payload = $this->buildPayload($data, false, $user);
 
         if (! empty($data['password'])) {
             try {
-                $this->ftpAccountProvisioningService->updateFtpPassword($user, (string) $data['password']);
+                $plainPassword = (string) $data['password'];
+
+                if ($user->ftp_username) {
+                    $this->ftpAccountProvisioningService->updateFtpPassword($user, $plainPassword);
+                } else {
+                    $ftpPayload = $this->ftpAccountProvisioningService->provisionForUser($user, $plainPassword);
+                    $payload = array_merge($payload, $ftpPayload);
+                }
+
+                $payload['ftp_password'] = $plainPassword;
             } catch (Throwable $exception) {
                 return back()
                     ->withInput($request->except(['password', 'password_confirmation']))
@@ -68,7 +78,7 @@ class UserManagementController extends Controller
             }
         }
 
-        $user->update($this->buildPayload($data, false));
+        $user->update($payload);
 
         return redirect()->route('users.index')->with('status', 'User updated successfully.');
     }
@@ -106,7 +116,7 @@ class UserManagementController extends Controller
         ];
     }
 
-    private function buildPayload(array $data, bool $isCreate): array
+    private function buildPayload(array $data, bool $isCreate, ?User $existingUser): array
     {
         $role = $data['role'];
 
@@ -121,12 +131,24 @@ class UserManagementController extends Controller
             'speed_limit_kbps' => isset($data['speed_limit_kbps']) && $data['speed_limit_kbps'] !== ''
                 ? (int) $data['speed_limit_kbps']
                 : null,
-            'home_directory' => '/',
-            'ftp_host' => null,
-            'ftp_port' => (int) config('storage_manager.ftp.port', 21),
-            'ftp_username' => null,
-            'ftp_passive' => (bool) config('storage_manager.ftp.passive', true),
-            'ftp_ssl' => (bool) config('storage_manager.ftp.ssl', false),
+            'home_directory' => $isCreate
+                ? '/'
+                : ((string) ($existingUser?->home_directory ?: '/')),
+            'ftp_host' => $isCreate
+                ? null
+                : ((string) ($existingUser?->ftp_host ?: config('storage_manager.ftp.host', '127.0.0.1'))),
+            'ftp_port' => $isCreate
+                ? (int) config('storage_manager.ftp.port', 21)
+                : (int) ($existingUser?->ftp_port ?: config('storage_manager.ftp.port', 21)),
+            'ftp_username' => $isCreate
+                ? null
+                : $existingUser?->ftp_username,
+            'ftp_passive' => $isCreate
+                ? (bool) config('storage_manager.ftp.passive', true)
+                : (bool) ($existingUser?->ftp_passive ?? config('storage_manager.ftp.passive', true)),
+            'ftp_ssl' => $isCreate
+                ? (bool) config('storage_manager.ftp.ssl', false)
+                : (bool) ($existingUser?->ftp_ssl ?? config('storage_manager.ftp.ssl', false)),
         ];
 
         if ($isCreate || ! empty($data['password'])) {
