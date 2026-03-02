@@ -31,11 +31,19 @@ class TransferController extends Controller
         $parentDir = null;
         $directories = [];
         $files = [];
+        $breadcrumbs = $this->buildBreadcrumbs('');
+        $browserStats = [
+            'dir_count' => 0,
+            'file_count' => 0,
+            'total_size_bytes' => 0,
+            'total_size_label' => '0 B',
+        ];
         $browserError = null;
 
         try {
             $currentDir = $this->normalizeRelativePath((string) $request->query('dir', ''));
-            [$directories, $files, $parentDir] = $this->listRemoteEntries($user, $currentDir);
+            [$directories, $files, $parentDir, $browserStats] = $this->listRemoteEntries($user, $currentDir);
+            $breadcrumbs = $this->buildBreadcrumbs($currentDir);
         } catch (Throwable $exception) {
             $browserError = $exception->getMessage();
         }
@@ -47,6 +55,8 @@ class TransferController extends Controller
             'ftpPreview' => $ftpPreview,
             'currentDir' => $currentDir,
             'parentDir' => $parentDir,
+            'breadcrumbs' => $breadcrumbs,
+            'browserStats' => $browserStats,
             'directories' => $directories,
             'files' => $files,
             'browserError' => $browserError,
@@ -488,6 +498,59 @@ class TransferController extends Controller
         }
     }
 
+    public function deleteEntry(Request $request)
+    {
+        $user = $request->user();
+        $request->validate([
+            'path' => ['required', 'string', 'max:1024'],
+            'type' => ['required', 'in:file,folder'],
+            'current_dir' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        try {
+            $path = $this->normalizeRelativePath((string) $request->input('path'));
+            $type = (string) $request->input('type');
+            $currentDir = $this->normalizeRelativePath((string) $request->input('current_dir', ''));
+        } catch (Throwable $exception) {
+            return redirect()
+                ->route('transfers.index')
+                ->withErrors(['upload' => 'Delete failed: ' . $exception->getMessage()]);
+        }
+
+        if ($path === '') {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Delete failed: Invalid path.']);
+        }
+
+        $connection = null;
+
+        try {
+            $connection = $this->openFtpConnection($user);
+            $absolutePath = $this->absoluteFtpPath($user, $path);
+
+            if ($type === 'folder') {
+                $this->deleteFtpDirectoryRecursive($connection, $absolutePath);
+            } else {
+                if (! @ftp_delete($connection, $absolutePath)) {
+                    throw new Exception('Could not delete file on FTP.');
+                }
+            }
+
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->with('status', ucfirst($type) . " deleted: {$path}");
+        } catch (Throwable $exception) {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Delete failed: ' . $exception->getMessage()]);
+        } finally {
+            if ($connection) {
+                @ftp_close($connection);
+            }
+        }
+    }
+
     public function download(Request $request): BinaryFileResponse
     {
         $request->validate([
@@ -634,58 +697,86 @@ class TransferController extends Controller
 
     private function listRemoteEntries(User $user, string $currentDir): array
     {
-        $connection = null;
+        $maxAttempts = 2;
+        $attempt = 0;
+        $lastError = 'Could not read remote folder list.';
 
-        try {
-            $connection = $this->openFtpConnection($user);
-            $absoluteDir = $this->absoluteFtpPath($user, $currentDir);
-            $rawList = @ftp_rawlist($connection, $absoluteDir);
+        while ($attempt < $maxAttempts) {
+            $attempt++;
+            $connection = null;
 
-            if ($rawList === false) {
-                throw new Exception('Could not read remote folder list.');
-            }
+            try {
+                $connection = $this->openFtpConnection($user);
+                $absoluteDir = $this->absoluteFtpPath($user, $currentDir);
 
-            $directories = [];
-            $files = [];
-
-            foreach ($rawList as $line) {
-                $entry = $this->parseRawListLine((string) $line);
-                if (! $entry) {
-                    continue;
+                $entries = $this->readEntriesFromMlsd($connection, $absoluteDir);
+                if ($entries === null) {
+                    $entries = $this->readEntriesFromRawList($connection, $absoluteDir);
+                }
+                if ($entries === null) {
+                    $entries = $this->readEntriesFromNlist($connection, $absoluteDir);
                 }
 
-                $entryRelativePath = $this->joinRelativePath($currentDir, $entry['name']);
-
-                if ($entry['is_dir']) {
-                    $directories[] = [
-                        'name' => $entry['name'],
-                        'relative_path' => $entryRelativePath,
-                    ];
-                } else {
-                    $files[] = [
-                        'name' => $entry['name'],
-                        'relative_path' => $entryRelativePath,
-                        'size_bytes' => $entry['size'],
-                    ];
+                if ($entries === null) {
+                    throw new Exception('Could not read remote folder list.');
                 }
-            }
 
-            usort($directories, fn ($a, $b) => strcasecmp($a['name'], $b['name']));
-            usort($files, fn ($a, $b) => strcasecmp($a['name'], $b['name']));
+                $directories = [];
+                $files = [];
+                $seen = [];
 
-            $parentDir = null;
-            if ($currentDir !== '') {
-                $parentDir = str_contains($currentDir, '/')
-                    ? Str::beforeLast($currentDir, '/')
-                    : '';
-            }
+                foreach ($entries as $entry) {
+                    $name = $this->normalizeEntryName((string) ($entry['name'] ?? ''));
+                    if ($name === '' || isset($seen[$name])) {
+                        continue;
+                    }
+                    $seen[$name] = true;
 
-            return [$directories, $files, $parentDir];
-        } finally {
-            if ($connection) {
-                @ftp_close($connection);
+                    $entryRelativePath = $this->joinRelativePath($currentDir, $name);
+
+                    if ((bool) ($entry['is_dir'] ?? false)) {
+                        $directories[] = [
+                            'name' => $name,
+                            'relative_path' => $entryRelativePath,
+                        ];
+                    } else {
+                        $size = max(0, (int) ($entry['size'] ?? 0));
+                        $files[] = [
+                            'name' => $name,
+                            'relative_path' => $entryRelativePath,
+                            'size_bytes' => $size,
+                            'size_label' => $this->humanFileSize($size),
+                        ];
+                    }
+                }
+
+                usort($directories, fn ($a, $b) => strnatcasecmp($a['name'], $b['name']));
+                usort($files, fn ($a, $b) => strnatcasecmp($a['name'], $b['name']));
+
+                $parentDir = null;
+                if ($currentDir !== '') {
+                    $parentDir = str_contains($currentDir, '/')
+                        ? Str::beforeLast($currentDir, '/')
+                        : '';
+                }
+
+                $browserStats = $this->buildBrowserStats($directories, $files);
+
+                return [$directories, $files, $parentDir, $browserStats];
+            } catch (Throwable $exception) {
+                $lastError = $exception->getMessage();
+                if ($attempt >= $maxAttempts) {
+                    break;
+                }
+                usleep(150000);
+            } finally {
+                if ($connection) {
+                    @ftp_close($connection);
+                }
             }
         }
+
+        throw new Exception($lastError);
     }
 
     private function parseRawListLine(string $line): ?array
@@ -727,6 +818,182 @@ class TransferController extends Controller
             'is_dir' => str_starts_with($parts[0], 'd'),
             'size' => (int) $parts[4],
         ];
+    }
+
+    private function readEntriesFromMlsd($connection, string $absoluteDir): ?array
+    {
+        if (! function_exists('ftp_mlsd')) {
+            return null;
+        }
+
+        $list = @ftp_mlsd($connection, $absoluteDir);
+        if (! is_array($list)) {
+            return null;
+        }
+
+        $entries = [];
+        foreach ($list as $row) {
+            if (! is_array($row)) {
+                continue;
+            }
+
+            $name = (string) ($row['name'] ?? '');
+            if ($name === '' || $name === '.' || $name === '..') {
+                continue;
+            }
+
+            $type = strtolower((string) ($row['type'] ?? ''));
+            $entries[] = [
+                'name' => $name,
+                'is_dir' => in_array($type, ['dir', 'cdir', 'pdir'], true),
+                'size' => (int) ($row['size'] ?? 0),
+            ];
+        }
+
+        return $entries;
+    }
+
+    private function readEntriesFromRawList($connection, string $absoluteDir): ?array
+    {
+        $rawList = @ftp_rawlist($connection, $absoluteDir);
+        if (! is_array($rawList)) {
+            return null;
+        }
+
+        $entries = [];
+        foreach ($rawList as $line) {
+            $entry = $this->parseRawListLine((string) $line);
+            if ($entry) {
+                $entries[] = $entry;
+            }
+        }
+
+        return $entries;
+    }
+
+    private function readEntriesFromNlist($connection, string $absoluteDir): ?array
+    {
+        $nlist = @ftp_nlist($connection, $absoluteDir);
+        if (! is_array($nlist)) {
+            return null;
+        }
+
+        $entries = [];
+        foreach ($nlist as $item) {
+            $item = str_replace('\\', '/', trim((string) $item));
+            if ($item === '' || str_ends_with($item, '/.') || str_ends_with($item, '/..')) {
+                continue;
+            }
+
+            $name = basename($item);
+            if ($name === '' || $name === '.' || $name === '..') {
+                continue;
+            }
+
+            $target = '/' . ltrim($this->normalizeRelativePath(trim($absoluteDir, '/') . '/' . $name), '/');
+            $size = (int) @ftp_size($connection, $target);
+
+            $entries[] = [
+                'name' => $name,
+                'is_dir' => $size < 0,
+                'size' => $size > 0 ? $size : 0,
+            ];
+        }
+
+        return $entries;
+    }
+
+    private function normalizeEntryName(string $name): string
+    {
+        $name = trim(str_replace('\\', '/', $name));
+        $name = basename($name);
+
+        if ($name === '.' || $name === '..') {
+            return '';
+        }
+
+        return $name;
+    }
+
+    private function buildBrowserStats(array $directories, array $files): array
+    {
+        $totalSize = 0;
+        foreach ($files as $file) {
+            $totalSize += (int) ($file['size_bytes'] ?? 0);
+        }
+
+        return [
+            'dir_count' => count($directories),
+            'file_count' => count($files),
+            'total_size_bytes' => $totalSize,
+            'total_size_label' => $this->humanFileSize($totalSize),
+        ];
+    }
+
+    private function buildBreadcrumbs(string $currentDir): array
+    {
+        $breadcrumbs = [
+            ['label' => 'Root', 'dir' => ''],
+        ];
+
+        if ($currentDir === '') {
+            return $breadcrumbs;
+        }
+
+        $parts = array_filter(explode('/', $currentDir), fn ($part) => $part !== '');
+        $acc = '';
+
+        foreach ($parts as $part) {
+            $acc = $this->joinRelativePath($acc, $part);
+            $breadcrumbs[] = [
+                'label' => $part,
+                'dir' => $acc,
+            ];
+        }
+
+        return $breadcrumbs;
+    }
+
+    private function humanFileSize(int $bytes): string
+    {
+        if ($bytes < 1024) {
+            return $bytes . ' B';
+        }
+
+        $units = ['KB', 'MB', 'GB', 'TB'];
+        $size = $bytes / 1024;
+        $unitIndex = 0;
+
+        while ($size >= 1024 && $unitIndex < count($units) - 1) {
+            $size /= 1024;
+            $unitIndex++;
+        }
+
+        return number_format($size, 2) . ' ' . $units[$unitIndex];
+    }
+
+    private function deleteFtpDirectoryRecursive($connection, string $absoluteDir): void
+    {
+        $rawList = @ftp_rawlist($connection, $absoluteDir);
+        if (is_array($rawList)) {
+            foreach ($rawList as $line) {
+                $entry = $this->parseRawListLine((string) $line);
+                if (! $entry) {
+                    continue;
+                }
+
+                $childPath = rtrim($absoluteDir, '/') . '/' . $entry['name'];
+                if ($entry['is_dir']) {
+                    $this->deleteFtpDirectoryRecursive($connection, $childPath);
+                } else {
+                    @ftp_delete($connection, $childPath);
+                }
+            }
+        }
+
+        if (! @ftp_rmdir($connection, $absoluteDir)) {
+            throw new Exception('Could not delete folder on FTP.');
+        }
     }
 
     private function openFtpConnection(User $user)
