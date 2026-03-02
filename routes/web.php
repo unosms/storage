@@ -17,6 +17,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/transfers', [TransferController::class, 'index'])->name('transfers.index');
     Route::post('/transfers/upload', [TransferController::class, 'upload'])->name('transfers.upload');
+    Route::post('/transfers/folders', [TransferController::class, 'createFolder'])->name('transfers.folders.store');
+    Route::get('/transfers/download', [TransferController::class, 'download'])->name('transfers.download');
 
     Route::middleware('admin')->group(function () {
         Route::resource('users', UserManagementController::class)->except(['show']);
