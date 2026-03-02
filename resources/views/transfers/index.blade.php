@@ -172,6 +172,19 @@
                     </div>
                 @endif
 
+                @php
+                    $moveTargets = [['value' => '/', 'label' => '/ (Root)']];
+                    if ($parentDir !== null && $parentDir !== '') {
+                        $moveTargets[] = ['value' => $parentDir, 'label' => '/' . $parentDir];
+                    }
+                    foreach ($directories as $targetDirectory) {
+                        $moveTargets[] = [
+                            'value' => $targetDirectory['relative_path'],
+                            'label' => '/' . $targetDirectory['relative_path'],
+                        ];
+                    }
+                @endphp
+
                 <div class="rounded-xl border border-slate-200 bg-slate-50 p-3 mb-4">
                     <div class="flex flex-wrap items-center gap-2 text-sm">
                         @foreach ($breadcrumbs as $i => $crumb)
@@ -210,7 +223,7 @@
                         Refresh
                     </a>
 
-                    <form action="{{ route('transfers.folders.store') }}" method="POST" class="flex items-center gap-2 ml-auto">
+                    <form action="{{ route('transfers.folders.store') }}" method="POST" class="flex flex-wrap items-center gap-2">
                         @csrf
                         <input type="hidden" name="current_dir" value="{{ $currentDir }}">
                         <input
@@ -221,7 +234,7 @@
                             class="rounded-lg border-slate-300 text-sm"
                         />
                         <button type="submit" class="inline-flex items-center rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold uppercase tracking-widest text-white hover:bg-slate-700">
-                            + Create
+                            + Create Folder
                         </button>
                     </form>
                 </div>
@@ -292,17 +305,34 @@
                                         <td class="px-4 py-3 text-slate-500">File</td>
                                         <td class="px-4 py-3 text-right font-medium text-slate-700">{{ $remoteFile['size_label'] ?? number_format($remoteFile['size_bytes'] / 1024 / 1024, 2) . ' MB' }}</td>
                                         <td class="px-4 py-3">
-                                            <div class="flex justify-end gap-2">
-                                                <a href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}" class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
-                                                    Download
-                                                </a>
-                                                <form method="POST" action="{{ route('transfers.delete') }}" onsubmit="return confirm('Delete file {{ $remoteFile['name'] }}?')">
+                                            <div class="flex flex-col items-end gap-2">
+                                                <div class="flex justify-end gap-2">
+                                                    <a href="{{ route('transfers.download', ['path' => $remoteFile['relative_path'], 'name' => $remoteFile['name']]) }}" class="inline-flex items-center rounded-md border border-slate-300 px-2 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50">
+                                                        Download
+                                                    </a>
+                                                    <form method="POST" action="{{ route('transfers.delete') }}" onsubmit="return confirm('Delete file {{ $remoteFile['name'] }}?')">
+                                                        @csrf
+                                                        <input type="hidden" name="type" value="file">
+                                                        <input type="hidden" name="path" value="{{ $remoteFile['relative_path'] }}">
+                                                        <input type="hidden" name="current_dir" value="{{ $currentDir }}">
+                                                        <button type="submit" class="inline-flex items-center rounded-md border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50">
+                                                            Delete
+                                                        </button>
+                                                    </form>
+                                                </div>
+
+                                                <form method="POST" action="{{ route('transfers.move') }}" class="flex items-center gap-2">
                                                     @csrf
                                                     <input type="hidden" name="type" value="file">
                                                     <input type="hidden" name="path" value="{{ $remoteFile['relative_path'] }}">
                                                     <input type="hidden" name="current_dir" value="{{ $currentDir }}">
-                                                    <button type="submit" class="inline-flex items-center rounded-md border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50">
-                                                        Delete
+                                                    <select name="target_dir" class="rounded-md border-slate-300 text-xs">
+                                                        @foreach ($moveTargets as $target)
+                                                            <option value="{{ $target['value'] }}">{{ $target['label'] }}</option>
+                                                        @endforeach
+                                                    </select>
+                                                    <button type="submit" class="inline-flex items-center rounded-md border border-indigo-300 px-2 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-50">
+                                                        Move
                                                     </button>
                                                 </form>
                                             </div>

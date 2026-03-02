@@ -498,6 +498,85 @@ class TransferController extends Controller
         }
     }
 
+    public function moveEntry(Request $request)
+    {
+        $user = $request->user();
+        $request->validate([
+            'path' => ['required', 'string', 'max:1024'],
+            'type' => ['required', 'in:file,folder'],
+            'target_dir' => ['required', 'string', 'max:255'],
+            'current_dir' => ['nullable', 'string', 'max:255'],
+        ]);
+
+        try {
+            $path = $this->normalizeRelativePath((string) $request->input('path'));
+            $type = (string) $request->input('type');
+            $targetDir = $this->normalizeRelativePath((string) $request->input('target_dir'));
+            $currentDir = $this->normalizeRelativePath((string) $request->input('current_dir', ''));
+        } catch (Throwable $exception) {
+            return redirect()
+                ->route('transfers.index')
+                ->withErrors(['upload' => 'Move failed: ' . $exception->getMessage()]);
+        }
+
+        if ($path === '') {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Move failed: Invalid source path.']);
+        }
+
+        $entryName = basename($path);
+        if ($entryName === '' || $entryName === '.' || $entryName === '..') {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Move failed: Invalid source name.']);
+        }
+
+        if ($type === 'folder' && ($targetDir === $path || str_starts_with($targetDir, $path . '/'))) {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Move failed: Cannot move a folder into itself.']);
+        }
+
+        $destinationRelativePath = $this->joinRelativePath($targetDir, $entryName);
+        if ($destinationRelativePath === $path) {
+            $targetLabel = $targetDir === '' ? '/' : '/' . $targetDir;
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->with('status', ucfirst($type) . " already exists in {$targetLabel}.");
+        }
+
+        $connection = null;
+
+        try {
+            $connection = $this->openFtpConnection($user);
+            $absoluteFrom = $this->absoluteFtpPath($user, $path);
+            $absoluteTo = $this->absoluteFtpPath($user, $destinationRelativePath);
+            $absoluteTargetDir = $this->absoluteFtpPath($user, $targetDir);
+
+            if ($absoluteTargetDir !== '/') {
+                $this->ensureFtpDirectory($connection, $absoluteTargetDir);
+            }
+
+            if (! @ftp_rename($connection, $absoluteFrom, $absoluteTo)) {
+                throw new Exception('Could not move entry on FTP.');
+            }
+
+            $targetLabel = $targetDir === '' ? '/' : '/' . $targetDir;
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->with('status', ucfirst($type) . " moved to {$targetLabel}");
+        } catch (Throwable $exception) {
+            return redirect()
+                ->route('transfers.index', ['dir' => $currentDir])
+                ->withErrors(['upload' => 'Move failed: ' . $exception->getMessage()]);
+        } finally {
+            if ($connection) {
+                @ftp_close($connection);
+            }
+        }
+    }
+
     public function deleteEntry(Request $request)
     {
         $user = $request->user();
