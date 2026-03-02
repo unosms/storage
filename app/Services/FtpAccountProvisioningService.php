@@ -139,18 +139,32 @@ class FtpAccountProvisioningService
 
     private function runChpasswd(string $sudoPrefix, string $username, string $plainPassword): void
     {
+        $command = trim($sudoPrefix . ' chpasswd');
+
         $descriptorSpec = [
             0 => ['pipe', 'w'],
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
 
-        $process = @proc_open(trim($sudoPrefix . ' chpasswd'), $descriptorSpec, $pipes);
+        $process = @proc_open($command, $descriptorSpec, $pipes);
         if (! is_resource($process)) {
             throw new RuntimeException('Could not start chpasswd command.');
         }
 
-        fwrite($pipes[0], $username . ':' . $plainPassword . PHP_EOL);
+        if (! isset($pipes[0]) || ! is_resource($pipes[0])) {
+            foreach ($pipes as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
+            }
+
+            proc_close($process);
+            throw new RuntimeException('Could not write password to chpasswd. Ensure sudo NOPASSWD is configured.');
+        }
+
+        $line = $username . ':' . $plainPassword . PHP_EOL;
+        $bytes = @fwrite($pipes[0], $line);
         fclose($pipes[0]);
 
         $stdout = stream_get_contents($pipes[1]) ?: '';
@@ -160,10 +174,12 @@ class FtpAccountProvisioningService
         fclose($pipes[2]);
 
         $exitCode = proc_close($process);
-        if ($exitCode !== 0) {
+        if ($bytes === false || $exitCode !== 0) {
             $message = trim($stderr !== '' ? $stderr : $stdout);
-            throw new RuntimeException($message !== '' ? $message : 'Failed to set FTP user password.');
+            if ($message === '') {
+                $message = 'Failed to set FTP user password. Ensure sudo NOPASSWD is configured for chpasswd.';
+            }
+            throw new RuntimeException($message);
         }
     }
 }
-
