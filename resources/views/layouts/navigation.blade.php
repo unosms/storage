@@ -2,11 +2,12 @@
     <!-- Primary Navigation Menu -->
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16">
-            <div class="flex">
+            <div class="flex items-center">
                 <!-- Logo -->
-                <div class="shrink-0 flex items-center">
-                    <a href="{{ route('dashboard') }}">
+                <div class="shrink-0 flex items-center gap-3">
+                    <a href="{{ route('dashboard') }}" class="flex items-center gap-3">
                         <x-application-logo class="block" style="height:40px;width:auto;max-height:40px;" />
+                        <span class="hidden md:block text-sm font-bold text-gray-700">Storage Manager</span>
                     </a>
                 </div>
 
@@ -15,6 +16,14 @@
                     <x-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                         {{ __('Dashboard') }}
                     </x-nav-link>
+                    <x-nav-link :href="route('transfers.index')" :active="request()->routeIs('transfers.*')">
+                        {{ __('Transfers') }}
+                    </x-nav-link>
+                    @if (Auth::user()->isAdmin())
+                        <x-nav-link :href="route('users.index')" :active="request()->routeIs('users.*')">
+                            {{ __('User Manager') }}
+                        </x-nav-link>
+                    @endif
                 </div>
             </div>
 
@@ -70,6 +79,14 @@
             <x-responsive-nav-link :href="route('dashboard')" :active="request()->routeIs('dashboard')">
                 {{ __('Dashboard') }}
             </x-responsive-nav-link>
+            <x-responsive-nav-link :href="route('transfers.index')" :active="request()->routeIs('transfers.*')">
+                {{ __('Transfers') }}
+            </x-responsive-nav-link>
+            @if (Auth::user()->isAdmin())
+                <x-responsive-nav-link :href="route('users.index')" :active="request()->routeIs('users.*')">
+                    {{ __('User Manager') }}
+                </x-responsive-nav-link>
+            @endif
         </div>
 
         <!-- Responsive Settings Options -->

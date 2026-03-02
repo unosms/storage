@@ -29,6 +29,8 @@ class RegisteredUserController extends Controller
      */
     public function store(Request $request): RedirectResponse
     {
+        $isFirstUser = User::count() === 0;
+
         $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'email' => ['required', 'string', 'lowercase', 'email', 'max:255', 'unique:'.User::class],
@@ -39,6 +41,15 @@ class RegisteredUserController extends Controller
             'name' => $request->name,
             'email' => $request->email,
             'password' => Hash::make($request->password),
+            'role' => $isFirstUser ? 'admin' : 'user',
+            'can_manage_users' => $isFirstUser,
+            'can_upload' => true,
+            'can_view_monitoring' => true,
+            'quota_mb' => 10240,
+            'home_directory' => '/',
+            'ftp_port' => 21,
+            'ftp_passive' => true,
+            'ftp_ssl' => false,
         ]);
 
         event(new Registered($user));
