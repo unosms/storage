@@ -25,10 +25,6 @@
                 <div class="lg:col-span-2 rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 p-6">
                     <h3 class="text-lg font-semibold text-slate-800 mb-4">Upload to FTP</h3>
 
-                    <div class="mb-4 rounded-lg bg-amber-50 border border-amber-200 p-3 text-sm text-amber-800">
-                        For very large files, set PHP limits in server `php.ini` (`upload_max_filesize`, `post_max_size`, `max_execution_time`) to high values.
-                    </div>
-
                     <form action="{{ route('transfers.upload') }}" method="POST" enctype="multipart/form-data" class="space-y-4">
                         @csrf
 
