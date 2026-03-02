@@ -1,4 +1,56 @@
 <x-app-layout>
+    <style>
+        .dashboard-stat-card {
+            position: relative;
+            overflow: hidden;
+            border-radius: 1rem;
+            padding: 1.25rem;
+            color: #fff;
+            box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18);
+            isolation: isolate;
+        }
+
+        .dashboard-stat-card::before,
+        .dashboard-stat-card::after {
+            content: "";
+            position: absolute;
+            border-radius: 9999px;
+            background: rgba(255, 255, 255, 0.18);
+            z-index: -1;
+        }
+
+        .dashboard-stat-card::before {
+            width: 110px;
+            height: 110px;
+            top: -38px;
+            right: -22px;
+        }
+
+        .dashboard-stat-card::after {
+            width: 72px;
+            height: 72px;
+            bottom: -28px;
+            left: -20px;
+            background: rgba(255, 255, 255, 0.12);
+        }
+
+        .dashboard-stat-users {
+            background: linear-gradient(135deg, #06b6d4 0%, #0284c7 100%);
+        }
+
+        .dashboard-stat-sessions {
+            background: linear-gradient(135deg, #6366f1 0%, #7c3aed 100%);
+        }
+
+        .dashboard-stat-progress {
+            background: linear-gradient(135deg, #10b981 0%, #0d9488 100%);
+        }
+
+        .dashboard-stat-transfer {
+            background: linear-gradient(135deg, #f43f5e 0%, #f97316 100%);
+        }
+    </style>
+
     <x-slot name="header">
         <div class="flex items-center justify-between">
             <h2 class="font-semibold text-xl text-gray-800 leading-tight">Storage Dashboard</h2>
@@ -15,25 +67,25 @@
             @endif
 
             <div class="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                <div class="rounded-2xl bg-gradient-to-br from-cyan-500 to-sky-600 p-5 text-white shadow-lg">
-                    <p class="text-sm uppercase tracking-wider text-cyan-100">Total Users</p>
+                <div class="dashboard-stat-card dashboard-stat-users">
+                    <p class="text-sm uppercase tracking-wider text-white/85">Total Users</p>
                     <p class="mt-2 text-3xl font-black">{{ number_format($stats['users_total']) }}</p>
-                    <p class="mt-1 text-xs text-cyan-100">Admins: {{ number_format($stats['admins_total']) }}</p>
+                    <p class="mt-1 text-xs text-white/80">Admins: {{ number_format($stats['admins_total']) }}</p>
                 </div>
-                <div class="rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 p-5 text-white shadow-lg">
-                    <p class="text-sm uppercase tracking-wider text-indigo-100">Active Sessions</p>
+                <div class="dashboard-stat-card dashboard-stat-sessions">
+                    <p class="text-sm uppercase tracking-wider text-white/85">Active Sessions</p>
                     <p class="mt-2 text-3xl font-black" id="active-sessions-card">{{ number_format($stats['active_sessions']) }}</p>
-                    <p class="mt-1 text-xs text-indigo-100">Logged in users now</p>
+                    <p class="mt-1 text-xs text-white/80">Logged in users now</p>
                 </div>
-                <div class="rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 p-5 text-white shadow-lg">
-                    <p class="text-sm uppercase tracking-wider text-emerald-100">In-Progress Transfers</p>
+                <div class="dashboard-stat-card dashboard-stat-progress">
+                    <p class="text-sm uppercase tracking-wider text-white/85">In-Progress Transfers</p>
                     <p class="mt-2 text-3xl font-black" id="in-progress-card">{{ number_format($stats['in_progress']) }}</p>
-                    <p class="mt-1 text-xs text-emerald-100">Current FTP uploads/downloads</p>
+                    <p class="mt-1 text-xs text-white/80">Current FTP uploads/downloads</p>
                 </div>
-                <div class="rounded-2xl bg-gradient-to-br from-rose-500 to-orange-500 p-5 text-white shadow-lg">
-                    <p class="text-sm uppercase tracking-wider text-rose-100">Transferred</p>
+                <div class="dashboard-stat-card dashboard-stat-transfer">
+                    <p class="text-sm uppercase tracking-wider text-white/85">Transferred</p>
                     <p class="mt-2 text-3xl font-black">{{ number_format($stats['transferred_gb'], 2) }} GB</p>
-                    <p class="mt-1 text-xs text-rose-100">Completed uploads: {{ number_format($stats['total_uploads']) }}</p>
+                    <p class="mt-1 text-xs text-white/80">Completed uploads: {{ number_format($stats['total_uploads']) }}</p>
                 </div>
             </div>
 
