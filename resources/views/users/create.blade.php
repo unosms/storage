@@ -6,6 +6,16 @@
     <div class="py-10">
         <div class="max-w-5xl mx-auto sm:px-6 lg:px-8">
             <div class="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200 p-6">
+                @if ($errors->any())
+                    <div class="mb-5 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-700">
+                        <ul class="list-disc list-inside text-sm space-y-1">
+                            @foreach ($errors->all() as $error)
+                                <li>{{ $error }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+
                 <form method="POST" action="{{ route('users.store') }}">
                     @csrf
 

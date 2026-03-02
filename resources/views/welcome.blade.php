@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{{ config('app.name', 'Storage Manager') }}</title>
+    <title>Storage Manager</title>
     <link rel="icon" type="image/png" href="{{ asset('lightwave.png') }}">
     @vite(['resources/css/app.css', 'resources/js/app.js'])
     <style>

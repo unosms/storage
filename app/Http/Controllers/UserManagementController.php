@@ -3,13 +3,18 @@
 namespace App\Http\Controllers;
 
 use App\Models\User;
+use App\Services\FtpAccountProvisioningService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Validation\Rule;
-use Illuminate\Validation\Rules\Password;
+use Throwable;
 
 class UserManagementController extends Controller
 {
+    public function __construct(private readonly FtpAccountProvisioningService $ftpAccountProvisioningService)
+    {
+    }
+
     public function index()
     {
         return view('users.index', [
@@ -26,7 +31,20 @@ class UserManagementController extends Controller
     {
         $data = $request->validate($this->rules());
 
-        User::create($this->buildPayload($data, true));
+        $user = User::create($this->buildPayload($data, true));
+
+        try {
+            $ftpPayload = $this->ftpAccountProvisioningService->provisionForUser($user, (string) $data['password']);
+            $user->update(array_merge($ftpPayload, [
+                'ftp_password' => (string) $data['password'],
+            ]));
+        } catch (Throwable $exception) {
+            $user->delete();
+
+            return back()
+                ->withInput($request->except(['password', 'password_confirmation']))
+                ->withErrors(['ftp' => 'User was not created: FTP provisioning failed. ' . $exception->getMessage()]);
+        }
 
         return redirect()->route('users.index')->with('status', 'User created successfully.');
     }
@@ -39,6 +57,16 @@ class UserManagementController extends Controller
     public function update(Request $request, User $user)
     {
         $data = $request->validate($this->rules($user->id, false));
+
+        if (! empty($data['password'])) {
+            try {
+                $this->ftpAccountProvisioningService->updateFtpPassword($user, (string) $data['password']);
+            } catch (Throwable $exception) {
+                return back()
+                    ->withInput($request->except(['password', 'password_confirmation']))
+                    ->withErrors(['ftp' => 'FTP password update failed: ' . $exception->getMessage()]);
+            }
+        }
 
         $user->update($this->buildPayload($data, false));
 
@@ -67,21 +95,14 @@ class UserManagementController extends Controller
             'name' => ['required', 'string', 'max:255'],
             'email' => $emailRule,
             'password' => $isCreate
-                ? ['required', 'confirmed', Password::defaults()]
-                : ['nullable', 'confirmed', Password::defaults()],
+                ? ['required', 'string', 'min:6', 'max:255', 'confirmed']
+                : ['nullable', 'string', 'min:6', 'max:255', 'confirmed'],
             'role' => ['required', Rule::in(['admin', 'user'])],
             'can_upload' => ['nullable', 'boolean'],
             'can_view_monitoring' => ['nullable', 'boolean'],
             'can_manage_users' => ['nullable', 'boolean'],
             'quota_mb' => ['required', 'integer', 'min:0'],
             'speed_limit_kbps' => ['nullable', 'integer', 'min:0'],
-            'home_directory' => ['required', 'string', 'max:255'],
-            'ftp_host' => ['nullable', 'string', 'max:255'],
-            'ftp_port' => ['nullable', 'integer', 'between:1,65535'],
-            'ftp_username' => ['nullable', 'string', 'max:255'],
-            'ftp_password' => [$isCreate ? 'nullable' : 'nullable', 'string', 'max:255'],
-            'ftp_passive' => ['nullable', 'boolean'],
-            'ftp_ssl' => ['nullable', 'boolean'],
         ];
     }
 
@@ -100,20 +121,20 @@ class UserManagementController extends Controller
             'speed_limit_kbps' => isset($data['speed_limit_kbps']) && $data['speed_limit_kbps'] !== ''
                 ? (int) $data['speed_limit_kbps']
                 : null,
-            'home_directory' => $data['home_directory'],
-            'ftp_host' => $data['ftp_host'] ?? null,
-            'ftp_port' => isset($data['ftp_port']) && $data['ftp_port'] !== '' ? (int) $data['ftp_port'] : 21,
-            'ftp_username' => $data['ftp_username'] ?? null,
-            'ftp_passive' => (bool) ($data['ftp_passive'] ?? false),
-            'ftp_ssl' => (bool) ($data['ftp_ssl'] ?? false),
+            'home_directory' => '/',
+            'ftp_host' => null,
+            'ftp_port' => (int) config('storage_manager.ftp.port', 21),
+            'ftp_username' => null,
+            'ftp_passive' => (bool) config('storage_manager.ftp.passive', true),
+            'ftp_ssl' => (bool) config('storage_manager.ftp.ssl', false),
         ];
-
-        if (! empty($data['ftp_password'])) {
-            $payload['ftp_password'] = $data['ftp_password'];
-        }
 
         if ($isCreate || ! empty($data['password'])) {
             $payload['password'] = Hash::make($data['password']);
+        }
+
+        if (! empty($data['password'])) {
+            $payload['ftp_password'] = (string) $data['password'];
         }
 
         return $payload;
