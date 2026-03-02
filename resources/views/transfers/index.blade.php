@@ -64,6 +64,22 @@
 
                         <div class="flex gap-3">
                             <x-primary-button id="start-upload-btn">Start Upload</x-primary-button>
+                            <button
+                                type="button"
+                                id="stop-upload-btn"
+                                class="inline-flex items-center rounded-lg border border-rose-300 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-rose-700 hover:bg-rose-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                                disabled
+                            >
+                                Stop
+                            </button>
+                            <button
+                                type="button"
+                                id="resume-upload-btn"
+                                class="inline-flex items-center rounded-lg border border-emerald-300 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-emerald-700 hover:bg-emerald-50 disabled:opacity-60 disabled:cursor-not-allowed"
+                                disabled
+                            >
+                                Resume
+                            </button>
                             <a href="{{ route('transfers.index', ['dir' => $currentDir]) }}" class="inline-flex items-center rounded-lg border border-slate-300 px-4 py-2 text-xs font-semibold uppercase tracking-widest text-slate-700 hover:bg-slate-50">
                                 Refresh
                             </a>
@@ -295,11 +311,17 @@
             const progressLabel = document.getElementById('upload-progress-label');
             const progressSpeed = document.getElementById('upload-progress-speed');
             const submitButton = document.getElementById('start-upload-btn');
+            const stopButton = document.getElementById('stop-upload-btn');
+            const resumeButton = document.getElementById('resume-upload-btn');
             const liveMessage = document.getElementById('live-message');
 
             if (!form) {
                 return;
             }
+
+            let activeXhr = null;
+            let isPaused = false;
+            const defaultButtonText = submitButton.textContent;
 
             const hasPendingTransfers = document.querySelector('tr[data-transfer-status="in_progress"]') !== null;
             if (hasPendingTransfers) {
@@ -320,22 +342,37 @@
                 return kbitsPerSecond.toFixed(2) + ' kbits/s';
             };
 
+            const setUploadButtons = ({ uploading = false, paused = false } = {}) => {
+                submitButton.disabled = uploading || paused;
+                stopButton.disabled = !uploading;
+                resumeButton.disabled = !paused;
+
+                if (uploading) {
+                    submitButton.classList.add('opacity-70', 'cursor-not-allowed');
+                    submitButton.textContent = 'Uploading...';
+                } else {
+                    submitButton.classList.remove('opacity-70', 'cursor-not-allowed');
+                    submitButton.textContent = defaultButtonText;
+                }
+            };
+
             const showMessage = (type, text) => {
                 liveMessage.innerHTML = '';
                 const box = document.createElement('div');
                 box.className = type === 'success'
                     ? 'rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800'
-                    : 'rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-700';
+                    : type === 'info'
+                        ? 'rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-amber-800'
+                        : 'rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-rose-700';
                 box.textContent = text;
                 liveMessage.appendChild(box);
             };
 
-            form.addEventListener('submit', function (event) {
+            const startUpload = (resume = false) => {
                 if (!window.XMLHttpRequest) {
+                    showMessage('error', 'This browser does not support upload progress.');
                     return;
                 }
-
-                event.preventDefault();
 
                 if (!fileInput.files || fileInput.files.length === 0) {
                     showMessage('error', 'Please choose a file first.');
@@ -344,17 +381,18 @@
 
                 const formData = new FormData(form);
                 const xhr = new XMLHttpRequest();
+                activeXhr = xhr;
+                isPaused = false;
                 const startedAt = Date.now();
-                const defaultButtonText = submitButton.textContent;
 
                 progressWrap.classList.remove('hidden');
-                progressBar.style.width = '0%';
-                progressPercent.textContent = '0%';
-                progressLabel.textContent = 'Uploading...';
-                progressSpeed.textContent = '';
-                submitButton.disabled = true;
-                submitButton.classList.add('opacity-70', 'cursor-not-allowed');
-                submitButton.textContent = 'Uploading...';
+                if (!resume) {
+                    progressBar.style.width = '0%';
+                    progressPercent.textContent = '0%';
+                }
+                progressLabel.textContent = resume ? 'Resuming...' : 'Uploading...';
+                progressSpeed.textContent = 'Current speed: 0.00 kbits/s';
+                setUploadButtons({ uploading: true, paused: false });
 
                 xhr.open('POST', form.action, true);
                 xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
@@ -371,13 +409,17 @@
 
                     const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
                     const kbitsPerSecond = (e.loaded * 8) / 1024 / seconds;
-                    progressSpeed.textContent = formatUploadSpeed(kbitsPerSecond);
+                    progressSpeed.textContent = 'Current speed: ' + formatUploadSpeed(kbitsPerSecond);
                 });
 
                 xhr.onload = function () {
-                    submitButton.disabled = false;
-                    submitButton.classList.remove('opacity-70', 'cursor-not-allowed');
-                    submitButton.textContent = defaultButtonText;
+                    if (activeXhr !== xhr) {
+                        return;
+                    }
+
+                    activeXhr = null;
+                    isPaused = false;
+                    setUploadButtons({ uploading: false, paused: false });
 
                     let payload = {};
                     try {
@@ -406,15 +448,56 @@
                 };
 
                 xhr.onerror = function () {
-                    submitButton.disabled = false;
-                    submitButton.classList.remove('opacity-70', 'cursor-not-allowed');
-                    submitButton.textContent = defaultButtonText;
+                    if (activeXhr !== xhr) {
+                        return;
+                    }
+
+                    activeXhr = null;
+                    isPaused = false;
+                    setUploadButtons({ uploading: false, paused: false });
                     progressLabel.textContent = 'Failed';
                     showMessage('error', 'Network error during upload.');
                 };
 
+                xhr.onabort = function () {
+                    if (activeXhr !== xhr) {
+                        return;
+                    }
+
+                    activeXhr = null;
+                    isPaused = true;
+                    progressLabel.textContent = 'Stopped';
+                    setUploadButtons({ uploading: false, paused: true });
+                    showMessage('info', 'Upload stopped. Click Resume to continue.');
+                };
+
                 xhr.send(formData);
+            };
+
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+                if (activeXhr) {
+                    return;
+                }
+
+                startUpload(false);
             });
+
+            stopButton.addEventListener('click', function () {
+                if (activeXhr) {
+                    activeXhr.abort();
+                }
+            });
+
+            resumeButton.addEventListener('click', function () {
+                if (activeXhr || !isPaused) {
+                    return;
+                }
+
+                startUpload(true);
+            });
+
+            setUploadButtons({ uploading: false, paused: false });
         });
     </script>
 </x-app-layout>
