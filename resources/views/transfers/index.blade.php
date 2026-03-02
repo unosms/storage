@@ -97,12 +97,16 @@
                     @endphp
                     <dl class="space-y-3 text-sm">
                         <div class="flex justify-between gap-3">
-                            <dt class="text-slate-500">Host</dt>
-                            <dd class="font-medium text-slate-800">{{ $u->ftp_host ?: 'Not configured' }}</dd>
+                            <dt class="text-slate-500">Local FTP</dt>
+                            <dd class="font-medium text-slate-800">172.16.203.237:21</dd>
                         </div>
                         <div class="flex justify-between gap-3">
-                            <dt class="text-slate-500">Port</dt>
-                            <dd class="font-medium text-slate-800">{{ $u->ftp_port }}</dd>
+                            <dt class="text-slate-500">Outside FTP</dt>
+                            <dd class="font-medium text-slate-800">89.43.132.136:621</dd>
+                        </div>
+                        <div class="flex justify-between gap-3">
+                            <dt class="text-slate-500">App FTP Target</dt>
+                            <dd class="font-medium text-slate-800">{{ ($u->ftp_host ?: 'Not configured') . ':' . ($u->ftp_port ?: 21) }}</dd>
                         </div>
                         <div class="flex justify-between gap-3">
                             <dt class="text-slate-500">Username</dt>
