@@ -308,6 +308,18 @@
                 }, 15000);
             }
 
+            const formatUploadSpeed = (kbitsPerSecond) => {
+                if (!Number.isFinite(kbitsPerSecond) || kbitsPerSecond < 0) {
+                    return '';
+                }
+
+                if (kbitsPerSecond >= 1024) {
+                    return (kbitsPerSecond / 1024).toFixed(2) + ' Mbits/s';
+                }
+
+                return kbitsPerSecond.toFixed(2) + ' kbits/s';
+            };
+
             const showMessage = (type, text) => {
                 liveMessage.innerHTML = '';
                 const box = document.createElement('div');
@@ -358,8 +370,8 @@
                     progressPercent.textContent = percent + '%';
 
                     const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
-                    const kbps = ((e.loaded * 8) / 1024 / seconds).toFixed(2);
-                    progressSpeed.textContent = kbps + ' kbps';
+                    const kbitsPerSecond = (e.loaded * 8) / 1024 / seconds;
+                    progressSpeed.textContent = formatUploadSpeed(kbitsPerSecond);
                 });
 
                 xhr.onload = function () {
