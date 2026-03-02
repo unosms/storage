@@ -30,7 +30,15 @@
                         If an upload is interrupted, upload the same file again in the same folder and it resumes automatically.
                     </p>
 
-                    <form id="ftp-upload-form" action="{{ route('transfers.upload') }}" method="POST" enctype="multipart/form-data" class="space-y-4">
+                    <form
+                        id="ftp-upload-form"
+                        action="{{ route('transfers.upload') }}"
+                        data-chunk-url="{{ route('transfers.upload.chunk') }}"
+                        data-complete-url="{{ route('transfers.upload.complete') }}"
+                        method="POST"
+                        enctype="multipart/form-data"
+                        class="space-y-4"
+                    >
                         @csrf
 
                         <div>
@@ -305,6 +313,7 @@
         document.addEventListener('DOMContentLoaded', function () {
             const form = document.getElementById('ftp-upload-form');
             const fileInput = document.getElementById('file');
+            const remoteSubdirInput = document.getElementById('remote_subdir');
             const progressWrap = document.getElementById('upload-progress-wrap');
             const progressBar = document.getElementById('upload-progress-bar');
             const progressPercent = document.getElementById('upload-progress-percent');
@@ -319,9 +328,12 @@
                 return;
             }
 
-            let activeXhr = null;
-            let isPaused = false;
+            const chunkUrl = form.dataset.chunkUrl;
+            const completeUrl = form.dataset.completeUrl;
+            const token = form.querySelector('input[name="_token"]')?.value || '';
+            const CHUNK_SIZE = 2 * 1024 * 1024;
             const defaultButtonText = submitButton.textContent;
+            let uploadState = null;
 
             const hasPendingTransfers = document.querySelector('tr[data-transfer-status="in_progress"]') !== null;
             if (hasPendingTransfers) {
@@ -342,18 +354,43 @@
                 return kbitsPerSecond.toFixed(2) + ' kbits/s';
             };
 
-            const setUploadButtons = ({ uploading = false, paused = false } = {}) => {
-                submitButton.disabled = uploading || paused;
+            const setUploadButtons = ({ uploading = false, paused = false, finalizing = false } = {}) => {
+                submitButton.disabled = uploading || paused || finalizing;
                 stopButton.disabled = !uploading;
                 resumeButton.disabled = !paused;
 
-                if (uploading) {
+                if (finalizing) {
+                    submitButton.classList.add('opacity-70', 'cursor-not-allowed');
+                    submitButton.textContent = 'Finalizing...';
+                } else if (uploading) {
                     submitButton.classList.add('opacity-70', 'cursor-not-allowed');
                     submitButton.textContent = 'Uploading...';
                 } else {
                     submitButton.classList.remove('opacity-70', 'cursor-not-allowed');
                     submitButton.textContent = defaultButtonText;
                 }
+            };
+
+            const safeToken = (value, maxLength = 24) => {
+                if (!value) {
+                    return '';
+                }
+
+                return String(value)
+                    .toLowerCase()
+                    .replace(/[^a-z0-9]+/g, '_')
+                    .replace(/^_+|_+$/g, '')
+                    .slice(0, maxLength);
+            };
+
+            const buildUploadId = (file, targetDir) => {
+                const dirPart = safeToken(targetDir || 'root', 20) || 'root';
+                const filePart = safeToken(file.name || 'file', 28) || 'file';
+                const sizePart = Number(file.size || 0);
+                const modifiedPart = Number(file.lastModified || 0);
+                const id = `up_${dirPart}_${filePart}_${sizePart}_${modifiedPart}`;
+
+                return id.slice(0, 80);
             };
 
             const showMessage = (type, text) => {
@@ -368,104 +405,194 @@
                 liveMessage.appendChild(box);
             };
 
-            const startUpload = (resume = false) => {
-                if (!window.XMLHttpRequest) {
-                    showMessage('error', 'This browser does not support upload progress.');
-                    return;
-                }
-
-                if (!fileInput.files || fileInput.files.length === 0) {
-                    showMessage('error', 'Please choose a file first.');
-                    return;
-                }
-
-                const formData = new FormData(form);
-                const xhr = new XMLHttpRequest();
-                activeXhr = xhr;
-                isPaused = false;
-                const startedAt = Date.now();
-
+            const resetProgressForNewUpload = () => {
                 progressWrap.classList.remove('hidden');
-                if (!resume) {
-                    progressBar.style.width = '0%';
-                    progressPercent.textContent = '0%';
-                }
-                progressLabel.textContent = resume ? 'Resuming...' : 'Uploading...';
+                progressBar.style.width = '0%';
+                progressPercent.textContent = '0%';
+                progressLabel.textContent = 'Uploading...';
                 progressSpeed.textContent = 'Current speed: 0.00 kbits/s';
-                setUploadButtons({ uploading: true, paused: false });
+            };
 
-                xhr.open('POST', form.action, true);
+            const updateProgress = (loadedBytes) => {
+                if (!uploadState || uploadState.fileSize <= 0) {
+                    return;
+                }
+
+                const boundedLoaded = Math.max(0, Math.min(uploadState.fileSize, loadedBytes));
+                const percent = Math.min(100, Math.round((boundedLoaded / uploadState.fileSize) * 100));
+                progressBar.style.width = percent + '%';
+                progressPercent.textContent = percent + '%';
+
+                const seconds = Math.max(1, (Date.now() - uploadState.startedAt) / 1000);
+                const kbitsPerSecond = (boundedLoaded * 8) / 1024 / seconds;
+                progressSpeed.textContent = 'Current speed: ' + formatUploadSpeed(kbitsPerSecond);
+            };
+
+            const parsePayload = (xhr) => {
+                try {
+                    return JSON.parse(xhr.responseText || '{}');
+                } catch (error) {
+                    return {};
+                }
+            };
+
+            const failUpload = (message) => {
+                if (!uploadState) {
+                    return;
+                }
+
+                uploadState.paused = true;
+                progressLabel.textContent = 'Stopped';
+                setUploadButtons({ uploading: false, paused: true });
+                showMessage('error', message || 'Upload failed.');
+            };
+
+            const finalizeUpload = () => {
+                if (!uploadState) {
+                    return;
+                }
+
+                const xhr = new XMLHttpRequest();
+                uploadState.activeXhr = xhr;
+                uploadState.paused = false;
+                progressLabel.textContent = 'Finalizing...';
+                setUploadButtons({ uploading: false, paused: false, finalizing: true });
+
+                const formData = new FormData();
+                formData.append('_token', token);
+                formData.append('upload_id', uploadState.uploadId);
+
+                xhr.open('POST', completeUrl, true);
                 xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
                 xhr.setRequestHeader('Accept', 'application/json');
 
-                xhr.upload.addEventListener('progress', function (e) {
-                    if (!e.lengthComputable) {
-                        return;
-                    }
-
-                    const percent = Math.min(100, Math.round((e.loaded / e.total) * 100));
-                    progressBar.style.width = percent + '%';
-                    progressPercent.textContent = percent + '%';
-
-                    const seconds = Math.max(1, (Date.now() - startedAt) / 1000);
-                    const kbitsPerSecond = (e.loaded * 8) / 1024 / seconds;
-                    progressSpeed.textContent = 'Current speed: ' + formatUploadSpeed(kbitsPerSecond);
-                });
-
                 xhr.onload = function () {
-                    if (activeXhr !== xhr) {
+                    if (!uploadState || uploadState.activeXhr !== xhr) {
                         return;
                     }
 
-                    activeXhr = null;
-                    isPaused = false;
+                    uploadState.activeXhr = null;
                     setUploadButtons({ uploading: false, paused: false });
 
-                    let payload = {};
-                    try {
-                        payload = JSON.parse(xhr.responseText || '{}');
-                    } catch (error) {
-                        payload = {};
-                    }
-
+                    const payload = parsePayload(xhr);
                     if (xhr.status >= 200 && xhr.status < 300 && payload.ok) {
                         progressBar.style.width = '100%';
                         progressPercent.textContent = '100%';
                         progressLabel.textContent = 'Completed';
                         showMessage('success', payload.message || 'Upload completed.');
+                        uploadState = null;
 
                         const redirectUrl = payload.redirect_url || window.location.href;
                         setTimeout(function () {
                             window.location.href = redirectUrl;
                         }, 700);
-
                         return;
                     }
 
-                    progressLabel.textContent = 'Failed';
-                    const message = payload.message || 'Upload failed.';
-                    showMessage('error', message);
-                };
-
-                xhr.onerror = function () {
-                    if (activeXhr !== xhr) {
-                        return;
-                    }
-
-                    activeXhr = null;
-                    isPaused = false;
-                    setUploadButtons({ uploading: false, paused: false });
-                    progressLabel.textContent = 'Failed';
-                    showMessage('error', 'Network error during upload.');
+                    failUpload(payload.message || 'Could not finalize upload.');
                 };
 
                 xhr.onabort = function () {
-                    if (activeXhr !== xhr) {
+                    if (!uploadState || uploadState.activeXhr !== xhr) {
                         return;
                     }
 
-                    activeXhr = null;
-                    isPaused = true;
+                    uploadState.activeXhr = null;
+                    uploadState.paused = true;
+                    progressLabel.textContent = 'Stopped';
+                    setUploadButtons({ uploading: false, paused: true });
+                    showMessage('info', 'Upload stopped. Click Resume to continue.');
+                };
+
+                xhr.onerror = function () {
+                    failUpload('Network error during upload finalization.');
+                };
+
+                xhr.send(formData);
+            };
+
+            const sendNextChunk = () => {
+                if (!uploadState || uploadState.paused) {
+                    return;
+                }
+
+                if (uploadState.uploadedBytes >= uploadState.fileSize) {
+                    finalizeUpload();
+                    return;
+                }
+
+                const chunkEnd = Math.min(uploadState.uploadedBytes + CHUNK_SIZE, uploadState.fileSize);
+                const chunkBlob = uploadState.file.slice(uploadState.uploadedBytes, chunkEnd);
+                const formData = new FormData();
+                formData.append('_token', token);
+                formData.append('upload_id', uploadState.uploadId);
+                formData.append('file_name', uploadState.fileName);
+                formData.append('file_size', String(uploadState.fileSize));
+                formData.append('chunk_start', String(uploadState.uploadedBytes));
+                formData.append('remote_subdir', uploadState.targetDir);
+                formData.append('chunk', chunkBlob, uploadState.fileName);
+
+                const xhr = new XMLHttpRequest();
+                uploadState.activeXhr = xhr;
+                setUploadButtons({ uploading: true, paused: false });
+
+                xhr.open('POST', chunkUrl, true);
+                xhr.setRequestHeader('X-Requested-With', 'XMLHttpRequest');
+                xhr.setRequestHeader('Accept', 'application/json');
+
+                xhr.upload.addEventListener('progress', function (e) {
+                    if (!uploadState || !e.lengthComputable) {
+                        return;
+                    }
+
+                    progressLabel.textContent = 'Uploading...';
+                    updateProgress(uploadState.uploadedBytes + e.loaded);
+                });
+
+                xhr.onload = function () {
+                    if (!uploadState || uploadState.activeXhr !== xhr) {
+                        return;
+                    }
+
+                    uploadState.activeXhr = null;
+                    const payload = parsePayload(xhr);
+
+                    if (xhr.status >= 200 && xhr.status < 300 && payload.ok) {
+                        const serverUploaded = Number(payload.uploaded_bytes);
+                        if (
+                            uploadState.uploadedBytes === 0 &&
+                            Number.isFinite(serverUploaded) &&
+                            serverUploaded > 0 &&
+                            serverUploaded < uploadState.fileSize
+                        ) {
+                            progressLabel.textContent = 'Resuming...';
+                        }
+                        uploadState.uploadedBytes = Number.isFinite(serverUploaded) ? serverUploaded : chunkEnd;
+                        updateProgress(uploadState.uploadedBytes);
+
+                        if (payload.done || uploadState.uploadedBytes >= uploadState.fileSize) {
+                            finalizeUpload();
+                            return;
+                        }
+
+                        sendNextChunk();
+                        return;
+                    }
+
+                    failUpload(payload.message || 'Chunk upload failed.');
+                };
+
+                xhr.onerror = function () {
+                    failUpload('Network error during upload.');
+                };
+
+                xhr.onabort = function () {
+                    if (!uploadState || uploadState.activeXhr !== xhr) {
+                        return;
+                    }
+
+                    uploadState.activeXhr = null;
+                    uploadState.paused = true;
                     progressLabel.textContent = 'Stopped';
                     setUploadButtons({ uploading: false, paused: true });
                     showMessage('info', 'Upload stopped. Click Resume to continue.');
@@ -474,27 +601,74 @@
                 xhr.send(formData);
             };
 
-            form.addEventListener('submit', function (event) {
-                event.preventDefault();
-                if (activeXhr) {
+            const startNewUpload = () => {
+                if (!window.XMLHttpRequest) {
+                    showMessage('error', 'This browser does not support upload progress.');
                     return;
                 }
 
-                startUpload(false);
+                const file = fileInput.files && fileInput.files[0] ? fileInput.files[0] : null;
+                if (!file) {
+                    showMessage('error', 'Please choose a file first.');
+                    return;
+                }
+
+                const targetDir = (remoteSubdirInput?.value || '').trim();
+                const uploadId = buildUploadId(file, targetDir);
+
+                uploadState = {
+                    uploadId: uploadId,
+                    file: file,
+                    fileName: file.name,
+                    fileSize: file.size,
+                    uploadedBytes: 0,
+                    startedAt: Date.now(),
+                    targetDir: targetDir,
+                    paused: false,
+                    activeXhr: null,
+                };
+
+                resetProgressForNewUpload();
+                setUploadButtons({ uploading: true, paused: false });
+                sendNextChunk();
+            };
+
+            form.addEventListener('submit', function (event) {
+                event.preventDefault();
+                if (uploadState && uploadState.activeXhr) {
+                    return;
+                }
+
+                startNewUpload();
             });
 
             stopButton.addEventListener('click', function () {
-                if (activeXhr) {
-                    activeXhr.abort();
+                if (uploadState && uploadState.activeXhr) {
+                    uploadState.activeXhr.abort();
                 }
             });
 
             resumeButton.addEventListener('click', function () {
-                if (activeXhr || !isPaused) {
+                if (!uploadState || uploadState.activeXhr || !uploadState.paused) {
                     return;
                 }
 
-                startUpload(true);
+                uploadState.paused = false;
+                progressLabel.textContent = uploadState.uploadedBytes >= uploadState.fileSize ? 'Finalizing...' : 'Resuming...';
+                setUploadButtons({ uploading: true, paused: false });
+
+                if (uploadState.uploadedBytes >= uploadState.fileSize) {
+                    finalizeUpload();
+                } else {
+                    sendNextChunk();
+                }
+            });
+
+            fileInput.addEventListener('change', function () {
+                if (uploadState && !uploadState.activeXhr) {
+                    uploadState = null;
+                    setUploadButtons({ uploading: false, paused: false });
+                }
             });
 
             setUploadButtons({ uploading: false, paused: false });

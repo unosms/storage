@@ -173,6 +173,281 @@ class TransferController extends Controller
         }
     }
 
+    public function uploadChunk(Request $request)
+    {
+        $user = $request->user();
+
+        if (! $user->can_upload && ! $user->isAdmin()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'You do not have upload permission.',
+            ], 403);
+        }
+
+        @set_time_limit(0);
+        @ini_set('max_execution_time', '0');
+
+        $data = $request->validate([
+            'upload_id' => ['required', 'string', 'max:80', 'regex:/^[A-Za-z0-9_-]+$/'],
+            'file_name' => ['required', 'string', 'max:255'],
+            'file_size' => ['required', 'integer', 'min:1'],
+            'chunk_start' => ['required', 'integer', 'min:0'],
+            'remote_subdir' => ['nullable', 'string', 'max:255'],
+            'chunk' => ['required', 'file'],
+        ]);
+
+        $fileSize = (int) $data['file_size'];
+        if ($user->quota_mb > 0 && ($user->used_space_bytes + $fileSize) > $user->quotaBytes()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Quota exceeded for this user.',
+            ], 422);
+        }
+
+        try {
+            $targetDir = $this->normalizeRelativePath((string) ($data['remote_subdir'] ?? ''));
+        } catch (Throwable $exception) {
+            return response()->json([
+                'ok' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+
+        $uploadId = (string) $data['upload_id'];
+        $safeName = $this->sanitizeFilename((string) $data['file_name']);
+        [$partPath, $metaPath] = $this->chunkPaths($user, $uploadId);
+
+        $uploadedBytes = is_file($partPath) ? (int) (filesize($partPath) ?: 0) : 0;
+        $chunkStart = (int) $data['chunk_start'];
+
+        if ($chunkStart > $uploadedBytes) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Upload offset mismatch. Please resume upload.',
+                'uploaded_bytes' => $uploadedBytes,
+            ], 409);
+        }
+
+        if ($chunkStart < $uploadedBytes) {
+            return response()->json([
+                'ok' => true,
+                'upload_id' => $uploadId,
+                'uploaded_bytes' => $uploadedBytes,
+                'file_size' => $fileSize,
+                'done' => $uploadedBytes >= $fileSize,
+            ]);
+        }
+
+        $chunkFile = $request->file('chunk');
+        $chunkPath = $chunkFile?->getRealPath();
+        if (! $chunkPath || ! is_file($chunkPath)) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Uploaded chunk is not readable.',
+            ], 422);
+        }
+
+        $chunkBytes = (int) (filesize($chunkPath) ?: 0);
+        if ($chunkBytes <= 0) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Chunk is empty.',
+            ], 422);
+        }
+
+        $remaining = max(0, $fileSize - $uploadedBytes);
+        $writeLimit = min($chunkBytes, $remaining);
+        if ($writeLimit <= 0) {
+            return response()->json([
+                'ok' => true,
+                'upload_id' => $uploadId,
+                'uploaded_bytes' => $uploadedBytes,
+                'file_size' => $fileSize,
+                'done' => true,
+            ]);
+        }
+
+        $in = @fopen($chunkPath, 'rb');
+        $out = @fopen($partPath, 'ab');
+        if (! is_resource($in) || ! is_resource($out)) {
+            if (is_resource($in)) {
+                @fclose($in);
+            }
+            if (is_resource($out)) {
+                @fclose($out);
+            }
+
+            return response()->json([
+                'ok' => false,
+                'message' => 'Could not open temporary upload storage.',
+            ], 500);
+        }
+
+        $copied = @stream_copy_to_stream($in, $out, $writeLimit);
+        @fclose($in);
+        @fclose($out);
+
+        if (! is_int($copied) || $copied < 0) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Failed to write upload chunk.',
+            ], 500);
+        }
+
+        $uploadedBytes = min($fileSize, $uploadedBytes + $copied);
+
+        $meta = [
+            'user_id' => $user->id,
+            'upload_id' => $uploadId,
+            'file_name' => (string) $data['file_name'],
+            'safe_name' => $safeName,
+            'file_size' => $fileSize,
+            'target_dir' => $targetDir,
+            'updated_at' => now()->toISOString(),
+        ];
+
+        @file_put_contents($metaPath, json_encode($meta, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        return response()->json([
+            'ok' => true,
+            'upload_id' => $uploadId,
+            'uploaded_bytes' => $uploadedBytes,
+            'file_size' => $fileSize,
+            'done' => $uploadedBytes >= $fileSize,
+        ]);
+    }
+
+    public function uploadComplete(Request $request)
+    {
+        $user = $request->user();
+
+        if (! $user->can_upload && ! $user->isAdmin()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'You do not have upload permission.',
+            ], 403);
+        }
+
+        $data = $request->validate([
+            'upload_id' => ['required', 'string', 'max:80', 'regex:/^[A-Za-z0-9_-]+$/'],
+        ]);
+
+        $uploadId = (string) $data['upload_id'];
+        [$partPath, $metaPath] = $this->chunkPaths($user, $uploadId);
+
+        if (! is_file($partPath) || ! is_file($metaPath)) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Upload session not found. Please start upload again.',
+            ], 404);
+        }
+
+        $metaRaw = @file_get_contents($metaPath);
+        $meta = is_string($metaRaw) ? json_decode($metaRaw, true) : null;
+        if (! is_array($meta) || ((int) ($meta['user_id'] ?? 0)) !== $user->id) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Upload metadata is invalid.',
+            ], 422);
+        }
+
+        $fileSize = (int) ($meta['file_size'] ?? 0);
+        $uploadedBytes = (int) (filesize($partPath) ?: 0);
+        if ($fileSize <= 0 || $uploadedBytes < $fileSize) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Upload is not complete yet. Please resume upload.',
+                'uploaded_bytes' => $uploadedBytes,
+                'file_size' => $fileSize,
+            ], 409);
+        }
+
+        if ($user->quota_mb > 0 && ($user->used_space_bytes + $fileSize) > $user->quotaBytes()) {
+            return response()->json([
+                'ok' => false,
+                'message' => 'Quota exceeded for this user.',
+            ], 422);
+        }
+
+        $safeName = $this->sanitizeFilename((string) ($meta['safe_name'] ?? $meta['file_name'] ?? 'file.bin'));
+        $targetDir = $this->normalizeRelativePath((string) ($meta['target_dir'] ?? ''));
+        $relativePath = $this->joinRelativePath($targetDir, $safeName);
+        $absoluteRemotePath = $this->absoluteFtpPath($user, $relativePath);
+        $absoluteTargetDir = $this->absoluteFtpPath($user, $targetDir);
+
+        $log = TransferLog::create([
+            'user_id' => $user->id,
+            'direction' => 'upload',
+            'status' => 'in_progress',
+            'original_name' => (string) ($meta['file_name'] ?? $safeName),
+            'filename' => $safeName,
+            'ftp_path' => $relativePath,
+            'size_bytes' => $fileSize,
+            'started_at' => now(),
+            'client_ip' => $request->ip(),
+        ]);
+
+        try {
+            $result = $this->uploadFileWithResume(
+                $user,
+                $partPath,
+                $absoluteRemotePath,
+                $fileSize,
+                $absoluteTargetDir
+            );
+
+            $existingBytes = min($result['existing_start'], $fileSize);
+            $bytesTransferred = max(0, $fileSize - $existingBytes);
+            $seconds = $result['seconds'];
+
+            if ($user->speed_limit_kbps && $user->speed_limit_kbps > 0 && $bytesTransferred > 0) {
+                $minimumSeconds = max(0.01, ($bytesTransferred * 8 / 1024) / $user->speed_limit_kbps);
+                if ($seconds < $minimumSeconds) {
+                    usleep((int) (($minimumSeconds - $seconds) * 1000000));
+                    $seconds = $minimumSeconds;
+                }
+            }
+
+            $speedKbps = $bytesTransferred > 0
+                ? round(($bytesTransferred * 8 / 1024) / max(0.01, $seconds), 2)
+                : 0.00;
+
+            DB::transaction(function () use ($log, $user, $bytesTransferred, $speedKbps) {
+                $log->update([
+                    'status' => 'completed',
+                    'speed_kbps' => $speedKbps,
+                    'finished_at' => now(),
+                ]);
+
+                if ($bytesTransferred > 0) {
+                    $user->increment('used_space_bytes', $bytesTransferred);
+                }
+            });
+
+            @unlink($partPath);
+            @unlink($metaPath);
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Upload completed to FTP: ' . $relativePath,
+                'path' => $relativePath,
+                'speed_kbps' => $speedKbps,
+                'redirect_url' => route('transfers.index', ['dir' => $targetDir]),
+            ]);
+        } catch (Throwable $exception) {
+            $log->update([
+                'status' => 'failed',
+                'finished_at' => now(),
+                'message' => Str::limit($exception->getMessage(), 500),
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'message' => $exception->getMessage(),
+            ], 422);
+        }
+    }
+
     public function createFolder(Request $request)
     {
         $user = $request->user();
@@ -567,6 +842,27 @@ class TransferController extends Controller
         $joined = $this->joinRelativePath($home, $relativePath);
 
         return '/' . ltrim($joined, '/');
+    }
+
+    private function chunkDirectory(User $user): string
+    {
+        $dir = storage_path('app/upload-chunks/' . $user->id);
+        if (! is_dir($dir)) {
+            @mkdir($dir, 0755, true);
+        }
+
+        return $dir;
+    }
+
+    private function chunkPaths(User $user, string $uploadId): array
+    {
+        $safeUploadId = preg_replace('/[^A-Za-z0-9_-]/', '', $uploadId) ?: 'upload';
+        $base = $this->chunkDirectory($user) . DIRECTORY_SEPARATOR . $safeUploadId;
+
+        return [
+            $base . '.part',
+            $base . '.json',
+        ];
     }
 
     private function normalizeStoredLogPath(User $user, string $storedPath): string

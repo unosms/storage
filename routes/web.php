@@ -17,6 +17,8 @@ Route::middleware(['auth', 'verified'])->group(function () {
 
     Route::get('/transfers', [TransferController::class, 'index'])->name('transfers.index');
     Route::post('/transfers/upload', [TransferController::class, 'upload'])->name('transfers.upload');
+    Route::post('/transfers/upload/chunk', [TransferController::class, 'uploadChunk'])->name('transfers.upload.chunk');
+    Route::post('/transfers/upload/complete', [TransferController::class, 'uploadComplete'])->name('transfers.upload.complete');
     Route::post('/transfers/folders', [TransferController::class, 'createFolder'])->name('transfers.folders.store');
     Route::get('/transfers/download', [TransferController::class, 'download'])->name('transfers.download');
 
