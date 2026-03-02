@@ -20,21 +20,19 @@ class FtpAccountProvisioningService
             return $this->buildConfigPayload($username, '/');
         }
 
-        $sudo = $this->sudoPrefix();
-
         if ($this->systemUserExists($username)) {
             throw new RuntimeException("FTP/system user '{$username}' already exists.");
         }
 
-        $this->runCommand("{$sudo} mkdir -p " . escapeshellarg($homePath));
-        $this->runCommand("{$sudo} useradd -M -d " . escapeshellarg($homePath) . ' -s ' . escapeshellarg($this->ftpShell()) . ' ' . escapeshellarg($username));
+        $this->runCommand($this->sudoCommand($this->binMkdir()) . ' -p ' . escapeshellarg($homePath));
+        $this->runCommand($this->sudoCommand($this->binUseradd()) . ' -M -d ' . escapeshellarg($homePath) . ' -s ' . escapeshellarg($this->ftpShell()) . ' ' . escapeshellarg($username));
 
         try {
-            $this->runChpasswd($sudo, $username, $plainPassword);
-            $this->runCommand("{$sudo} chown -R " . escapeshellarg("{$username}:{$username}") . ' ' . escapeshellarg($homePath));
-            $this->runCommand("{$sudo} chmod 750 " . escapeshellarg($homePath));
+            $this->runChpasswd($username, $plainPassword);
+            $this->runCommand($this->sudoCommand($this->binChown()) . ' -R ' . escapeshellarg("{$username}:{$username}") . ' ' . escapeshellarg($homePath));
+            $this->runCommand($this->sudoCommand($this->binChmod()) . ' 750 ' . escapeshellarg($homePath));
         } catch (\Throwable $exception) {
-            $this->runCommand("{$sudo} userdel " . escapeshellarg($username), false);
+            $this->runCommand($this->sudoCommand($this->binUserdel()) . ' ' . escapeshellarg($username), false);
             throw $exception;
         }
 
@@ -51,7 +49,7 @@ class FtpAccountProvisioningService
             return;
         }
 
-        $this->runChpasswd($this->sudoPrefix(), $user->ftp_username, $plainPassword);
+        $this->runChpasswd($user->ftp_username, $plainPassword);
     }
 
     private function buildConfigPayload(string $username, string $homeDirectory): array
@@ -119,7 +117,7 @@ class FtpAccountProvisioningService
             return false;
         }
 
-        $command = 'id -u ' . escapeshellarg($username) . ' >/dev/null 2>&1';
+        $command = escapeshellarg($this->binId()) . ' -u ' . escapeshellarg($username) . ' >/dev/null 2>&1';
         exec($command, $output, $exitCode);
 
         return $exitCode === 0;
@@ -137,49 +135,72 @@ class FtpAccountProvisioningService
         return [$exitCode, $outputText];
     }
 
-    private function runChpasswd(string $sudoPrefix, string $username, string $plainPassword): void
+    private function runChpasswd(string $username, string $plainPassword): void
     {
-        $command = trim($sudoPrefix . ' chpasswd');
-
-        $descriptorSpec = [
-            0 => ['pipe', 'w'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
-
-        $process = @proc_open($command, $descriptorSpec, $pipes);
-        if (! is_resource($process)) {
-            throw new RuntimeException('Could not start chpasswd command.');
+        $tempFile = @tempnam(sys_get_temp_dir(), 'chpass_');
+        if (! $tempFile) {
+            throw new RuntimeException('Could not create temporary file for FTP password provisioning.');
         }
 
-        if (! isset($pipes[0]) || ! is_resource($pipes[0])) {
-            foreach ($pipes as $pipe) {
-                if (is_resource($pipe)) {
-                    fclose($pipe);
-                }
+        try {
+            @chmod($tempFile, 0600);
+            $payload = $username . ':' . $plainPassword . PHP_EOL;
+
+            if (@file_put_contents($tempFile, $payload, LOCK_EX) === false) {
+                throw new RuntimeException('Could not write temporary password file for chpasswd.');
             }
 
-            proc_close($process);
-            throw new RuntimeException('Could not write password to chpasswd. Ensure sudo NOPASSWD is configured.');
-        }
+            [$exitCode, $output] = $this->runCommand(
+                $this->sudoCommand($this->binChpasswd()) . ' < ' . escapeshellarg($tempFile),
+                false
+            );
 
-        $line = $username . ':' . $plainPassword . PHP_EOL;
-        $bytes = @fwrite($pipes[0], $line);
-        fclose($pipes[0]);
-
-        $stdout = stream_get_contents($pipes[1]) ?: '';
-        fclose($pipes[1]);
-
-        $stderr = stream_get_contents($pipes[2]) ?: '';
-        fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
-        if ($bytes === false || $exitCode !== 0) {
-            $message = trim($stderr !== '' ? $stderr : $stdout);
-            if ($message === '') {
-                $message = 'Failed to set FTP user password. Ensure sudo NOPASSWD is configured for chpasswd.';
+            if ($exitCode !== 0) {
+                $message = $output !== '' ? $output : 'Failed to set FTP user password. Ensure sudo NOPASSWD is configured for chpasswd.';
+                throw new RuntimeException($message);
             }
-            throw new RuntimeException($message);
+        } finally {
+            @unlink($tempFile);
         }
+    }
+
+    private function sudoCommand(string $binaryPath): string
+    {
+        return trim($this->sudoPrefix() . ' ' . escapeshellarg($binaryPath));
+    }
+
+    private function binUseradd(): string
+    {
+        return (string) config('storage_manager.ftp.bin_useradd', '/usr/sbin/useradd');
+    }
+
+    private function binUserdel(): string
+    {
+        return (string) config('storage_manager.ftp.bin_userdel', '/usr/sbin/userdel');
+    }
+
+    private function binChpasswd(): string
+    {
+        return (string) config('storage_manager.ftp.bin_chpasswd', '/usr/sbin/chpasswd');
+    }
+
+    private function binMkdir(): string
+    {
+        return (string) config('storage_manager.ftp.bin_mkdir', '/bin/mkdir');
+    }
+
+    private function binChown(): string
+    {
+        return (string) config('storage_manager.ftp.bin_chown', '/bin/chown');
+    }
+
+    private function binChmod(): string
+    {
+        return (string) config('storage_manager.ftp.bin_chmod', '/bin/chmod');
+    }
+
+    private function binId(): string
+    {
+        return (string) config('storage_manager.ftp.bin_id', '/usr/bin/id');
     }
 }
