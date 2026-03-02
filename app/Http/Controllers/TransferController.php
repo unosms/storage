@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Models\User;
 use App\Models\TransferLog;
 use Exception;
 use Illuminate\Http\Request;
@@ -99,7 +100,7 @@ class TransferController extends Controller
             }
 
             if (! @ftp_login($connection, $user->ftp_username, $user->ftp_password)) {
-                throw new Exception('FTP login failed.');
+                throw new Exception($this->ftpLoginFailedMessage($user));
             }
 
             @ftp_pasv($connection, (bool) $user->ftp_passive);
@@ -172,5 +173,48 @@ class TransferController extends Controller
         $filename = trim($filename, '_');
 
         return $filename !== '' ? $filename : 'file.bin';
+    }
+
+    private function ftpLoginFailedMessage(User $user): string
+    {
+        $message = "FTP login failed for '{$user->ftp_username}' at {$user->ftp_host}:{$user->ftp_port}.";
+
+        if (PHP_OS_FAMILY !== 'Linux') {
+            return $message;
+        }
+
+        if (function_exists('posix_getpwnam')) {
+            $account = @posix_getpwnam((string) $user->ftp_username);
+            if (! is_array($account)) {
+                return $message . ' System user not found.';
+            }
+
+            $home = (string) ($account['dir'] ?? '');
+            if ($home !== '' && ! is_dir($home)) {
+                $message .= " Home directory '{$home}' does not exist.";
+            }
+
+            $shell = (string) ($account['shell'] ?? '');
+            if ($shell !== '' && ! $this->shellIsAllowed($shell)) {
+                $message .= " Shell '{$shell}' is not listed in /etc/shells.";
+            }
+        }
+
+        return $message;
+    }
+
+    private function shellIsAllowed(string $shell): bool
+    {
+        $shellsFile = '/etc/shells';
+        if (! is_file($shellsFile) || ! is_readable($shellsFile)) {
+            return true;
+        }
+
+        $shells = @file($shellsFile, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        if (! is_array($shells)) {
+            return true;
+        }
+
+        return in_array(trim($shell), array_map('trim', $shells), true);
     }
 }

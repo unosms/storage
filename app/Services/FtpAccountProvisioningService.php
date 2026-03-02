@@ -72,7 +72,7 @@ class FtpAccountProvisioningService
         }
 
         $seed = $emailBase !== '' ? $emailBase : $user->name;
-        $base = Str::of($seed)->lower()->replaceMatches('/[^a-z0-9._-]+/', '')->trim('._-')->limit(24, '');
+        $base = Str::of($seed)->lower()->replaceMatches('/[^a-z0-9_-]+/', '')->trim('_-')->limit(24, '');
         $base = $base !== '' ? (string) $base : 'storageuser';
 
         $candidate = $base;
