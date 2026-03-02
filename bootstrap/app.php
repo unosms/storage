@@ -11,6 +11,9 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware): void {
+        // Allow large uploads to be handled by PHP/server limits without Laravel pre-blocking.
+        $middleware->remove(\Illuminate\Http\Middleware\ValidatePostSize::class);
+
         $middleware->alias([
             'admin' => \App\Http\Middleware\EnsureAdmin::class,
         ]);
