@@ -16,6 +16,7 @@ class TransferController extends Controller
     public function index(Request $request)
     {
         $user = $request->user();
+        $ftpPreview = $this->resolveFtpConfig($user, true);
         $this->reconcileInProgressTransfers($user);
 
         $query = TransferLog::with('user')->latest('started_at')->latest('id');
@@ -43,6 +44,7 @@ class TransferController extends Controller
             'logs' => $logs,
             'quotaUsedGb' => round($user->used_space_bytes / 1024 / 1024 / 1024, 2),
             'quotaTotalGb' => $user->quota_mb > 0 ? round($user->quota_mb / 1024, 2) : null,
+            'ftpPreview' => $ftpPreview,
             'currentDir' => $currentDir,
             'parentDir' => $parentDir,
             'directories' => $directories,
@@ -729,35 +731,118 @@ class TransferController extends Controller
 
     private function openFtpConnection(User $user)
     {
-        $this->assertFtpConfigured($user);
+        $ftp = $this->resolveFtpConfig($user, true);
+        $this->assertFtpConfigured($ftp);
 
-        $connection = $user->ftp_ssl
-            ? @ftp_ssl_connect($user->ftp_host, (int) $user->ftp_port, 30)
-            : @ftp_connect($user->ftp_host, (int) $user->ftp_port, 30);
+        $connection = $ftp['ssl']
+            ? @ftp_ssl_connect($ftp['host'], $ftp['port'], 30)
+            : @ftp_connect($ftp['host'], $ftp['port'], 30);
 
         if (! $connection) {
             throw new Exception('Could not connect to FTP host.');
         }
 
-        if (! @ftp_login($connection, $user->ftp_username, $user->ftp_password)) {
+        if (! @ftp_login($connection, $ftp['username'], $ftp['password'])) {
             @ftp_close($connection);
-            throw new Exception($this->ftpLoginFailedMessage($user));
+            throw new Exception($this->ftpLoginFailedMessage($user, $ftp['host'], $ftp['port'], $ftp['username']));
         }
 
-        @ftp_pasv($connection, (bool) $user->ftp_passive);
+        @ftp_pasv($connection, $ftp['passive']);
 
         return $connection;
     }
 
-    private function assertFtpConfigured(User $user): void
+    private function assertFtpConfigured(array $ftp): void
     {
         if (! function_exists('ftp_connect')) {
             throw new Exception('PHP FTP extension is not enabled on this server.');
         }
 
-        if (! $user->ftp_host || ! $user->ftp_username || ! $user->ftp_password) {
-            throw new Exception('FTP settings are not complete. Ask admin to set host/username/password.');
+        if (! $ftp['host'] || ! $ftp['username']) {
+            throw new Exception('FTP settings are not complete. Ask admin to set host/username.');
         }
+
+        if (! $ftp['password']) {
+            throw new Exception('FTP password is missing for this user. Open User Manager, edit the user, set a password, and save.');
+        }
+    }
+
+    private function resolveFtpConfig(User $user, bool $persistFallbacks = false): array
+    {
+        $resolvedHost = trim((string) ($user->ftp_host ?? ''));
+        if ($resolvedHost === '') {
+            $resolvedHost = (string) config('storage_manager.ftp.host', '127.0.0.1');
+        }
+
+        $resolvedPort = (int) ($user->ftp_port ?: (int) config('storage_manager.ftp.port', 21));
+        if ($resolvedPort <= 0) {
+            $resolvedPort = (int) config('storage_manager.ftp.port', 21);
+        }
+
+        $resolvedUsername = trim((string) ($user->ftp_username ?? ''));
+        if ($resolvedUsername === '') {
+            $resolvedUsername = $this->fallbackFtpUsername($user);
+        }
+
+        $resolvedPassword = trim((string) ($user->ftp_password ?? ''));
+        if ($resolvedPassword === '') {
+            $resolvedPassword = trim((string) config('storage_manager.ftp.default_password', ''));
+        }
+
+        $resolvedPassive = (bool) ($user->ftp_passive ?? (bool) config('storage_manager.ftp.passive', true));
+        $resolvedSsl = (bool) ($user->ftp_ssl ?? (bool) config('storage_manager.ftp.ssl', false));
+
+        if ($persistFallbacks) {
+            $updates = [];
+
+            if (! $user->ftp_host && $resolvedHost !== '') {
+                $updates['ftp_host'] = $resolvedHost;
+            }
+
+            if ((! $user->ftp_port || (int) $user->ftp_port <= 0) && $resolvedPort > 0) {
+                $updates['ftp_port'] = $resolvedPort;
+            }
+
+            if (! $user->ftp_username && $resolvedUsername !== '') {
+                $updates['ftp_username'] = $resolvedUsername;
+            }
+
+            if (! $user->ftp_password && $resolvedPassword !== '') {
+                $updates['ftp_password'] = $resolvedPassword;
+            }
+
+            if (! empty($updates)) {
+                $user->forceFill($updates)->save();
+                $user->refresh();
+            }
+        }
+
+        return [
+            'host' => $resolvedHost,
+            'port' => $resolvedPort,
+            'username' => $resolvedUsername,
+            'password' => $resolvedPassword,
+            'passive' => $resolvedPassive,
+            'ssl' => $resolvedSsl,
+        ];
+    }
+
+    private function fallbackFtpUsername(User $user): string
+    {
+        $emailPrefix = '';
+        if (str_contains((string) $user->email, '@')) {
+            $emailPrefix = (string) Str::before((string) $user->email, '@');
+        }
+
+        $seed = $emailPrefix !== '' ? $emailPrefix : (string) $user->name;
+        $candidate = Str::of($seed)
+            ->lower()
+            ->replaceMatches('/[^a-z0-9._-]+/', '')
+            ->trim('._-')
+            ->limit(32, '')
+            ->value();
+
+        return $candidate !== '' ? $candidate : ('user' . $user->id);
     }
 
     private function ensureFtpDirectory($connection, string $absolutePath): void
@@ -963,16 +1048,16 @@ class TransferController extends Controller
         }
     }
 
-    private function ftpLoginFailedMessage(User $user): string
+    private function ftpLoginFailedMessage(User $user, string $host, int $port, string $username): string
     {
-        $message = "FTP login failed for '{$user->ftp_username}' at {$user->ftp_host}:{$user->ftp_port}.";
+        $message = "FTP login failed for '{$username}' at {$host}:{$port}.";
 
         if (PHP_OS_FAMILY !== 'Linux') {
             return $message;
         }
 
         if (function_exists('posix_getpwnam')) {
-            $account = @posix_getpwnam((string) $user->ftp_username);
+            $account = @posix_getpwnam($username);
             if (! is_array($account)) {
                 return $message . ' System user not found.';
             }

@@ -118,6 +118,13 @@
                     <h3 class="text-lg font-semibold text-slate-800 mb-4">FTP Connection</h3>
                     @php
                         $u = auth()->user();
+                        $ftp = $ftpPreview ?? [
+                            'host' => $u->ftp_host,
+                            'port' => $u->ftp_port ?: 21,
+                            'username' => $u->ftp_username,
+                            'passive' => $u->ftp_passive,
+                            'ssl' => $u->ftp_ssl,
+                        ];
                     @endphp
                     <dl class="space-y-3 text-sm">
                         <div class="flex justify-between gap-3">
@@ -130,19 +137,19 @@
                         </div>
                         <div class="flex justify-between gap-3">
                             <dt class="text-slate-500">App FTP Target</dt>
-                            <dd class="font-medium text-slate-800">{{ ($u->ftp_host ?: 'Not configured') . ':' . ($u->ftp_port ?: 21) }}</dd>
+                            <dd class="font-medium text-slate-800">{{ ($ftp['host'] ?: 'Not configured') . ':' . ($ftp['port'] ?: 21) }}</dd>
                         </div>
                         <div class="flex justify-between gap-3">
                             <dt class="text-slate-500">Username</dt>
-                            <dd class="font-medium text-slate-800">{{ $u->ftp_username ?: 'Not configured' }}</dd>
+                            <dd class="font-medium text-slate-800">{{ $ftp['username'] ?: 'Not configured' }}</dd>
                         </div>
                         <div class="flex justify-between gap-3">
                             <dt class="text-slate-500">Passive</dt>
-                            <dd class="font-medium text-slate-800">{{ $u->ftp_passive ? 'Enabled' : 'Disabled' }}</dd>
+                            <dd class="font-medium text-slate-800">{{ $ftp['passive'] ? 'Enabled' : 'Disabled' }}</dd>
                         </div>
                         <div class="flex justify-between gap-3">
                             <dt class="text-slate-500">SSL FTP</dt>
-                            <dd class="font-medium text-slate-800">{{ $u->ftp_ssl ? 'Enabled' : 'Disabled' }}</dd>
+                            <dd class="font-medium text-slate-800">{{ $ftp['ssl'] ? 'Enabled' : 'Disabled' }}</dd>
                         </div>
                     </dl>
                     @if (auth()->user()->isAdmin())
